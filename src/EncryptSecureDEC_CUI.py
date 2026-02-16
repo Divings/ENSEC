@@ -268,7 +268,7 @@ def main():
     file_path = Path(args.file)
     ext = file_path.suffix
 
-         # --- RSA Key Protection Management ---
+    # --- RSA Key Protection Management ---
     if args.mode == "key-protect-on":
         result = rsa_encryptor.migrate_private_key_encrypt_inplace()
         if result == 0:
@@ -280,7 +280,7 @@ def main():
         if result == 0:
             print("🔓 Private key protection DISABLED")
         sys.exit(result)
-        
+
     if not args.rsa and ext != ".rdec" and args.mode != "sign" and args.mode != "verify-sign" and args.dir!=True and ext!=".esdc":
         password = args.password or getpass.getpass("🔑 Enter password: ")
 
