@@ -78,7 +78,119 @@ def is_private_key_protected() -> bool:
 def set_private_key_protected(enabled: bool) -> None:
     set_setting("private_key_password_protect", "1" if enabled else "0")
 
-# ----
+# -------------- ここから追加（rsa_encryptor.py）--------------
+
+import datetime
+
+def is_pem_encrypted(pem_bytes: bytes) -> bool:
+    # だいたいのPEMはこの文言を含む（TraditionalOpenSSL形式）
+    return b"ENCRYPTED" in pem_bytes.splitlines()[0:5] or b"BEGIN ENCRYPTED PRIVATE KEY" in pem_bytes
+
+def backup_file(path: Path) -> Path:
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    bak = path.with_suffix(path.suffix + f".bak_{ts}")
+    bak.write_bytes(path.read_bytes())
+    os.chmod(bak, 0o600)
+    return bak
+
+def reserialize_private_key_to_path(private_key, out_path: Path, password: str | None):
+    if password is None:
+        enc_algo = serialization.NoEncryption()
+    else:
+        enc_algo = serialization.BestAvailableEncryption(password.encode("utf-8"))
+
+    out_path.write_bytes(
+        private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=enc_algo,
+        )
+    )
+    os.chmod(out_path, 0o600)
+
+def migrate_private_key_encrypt_inplace():
+    """
+    既存 private.pem を読み取り、パスワード暗号化して上書きする（移行）
+    """
+    if not RSA_KEY_PATH.exists():
+        print(f"[ERROR] private key not found: {RSA_KEY_PATH}")
+        return 1
+
+    pem = RSA_KEY_PATH.read_bytes()
+    if is_pem_encrypted(pem):
+        print("[INFO] private.pem is already encrypted. (No changes)")
+        return 0
+
+    # 平文鍵として読み込み（ここで失敗するならファイル破損など）
+    try:
+        priv = serialization.load_pem_private_key(pem, password=None)
+    except Exception as e:
+        print(f"[ERROR] Failed to load existing private key: {e}")
+        return 1
+
+    pw1 = getpass.getpass("New private key password: ")
+    pw2 = getpass.getpass("Confirm password: ")
+    if not pw1 or pw1 != pw2:
+        print("[ERROR] Password mismatch or empty. Aborting.")
+        return 1
+
+    bak = backup_file(RSA_KEY_PATH)
+    try:
+        reserialize_private_key_to_path(priv, RSA_KEY_PATH, pw1)
+        set_private_key_protected(True)  # 既に前のターンで追加した想定
+        print(f"[SUCCESS] Migrated: plaintext -> encrypted (backup: {bak})")
+        return 0
+    except Exception as e:
+        # 失敗したらバックアップで戻す
+        RSA_KEY_PATH.write_bytes(bak.read_bytes())
+        os.chmod(RSA_KEY_PATH, 0o600)
+        print(f"[ERROR] Migration failed; restored from backup. reason={e}")
+        return 1
+
+def migrate_private_key_decrypt_inplace():
+    """
+    既存 private.pem を読み取り、パスワード解除して平文PEMとして上書きする（解除）
+    """
+    if not RSA_KEY_PATH.exists():
+        print(f"[ERROR] private key not found: {RSA_KEY_PATH}")
+        return 1
+
+    pem = RSA_KEY_PATH.read_bytes()
+    if not is_pem_encrypted(pem):
+        print("[INFO] private.pem is already plaintext. (No changes)")
+        return 0
+
+    pw = getpass.getpass("Current private key password: ")
+    if not pw:
+        print("[ERROR] Empty password. Aborting.")
+        return 1
+
+    # 暗号化鍵として読み込み
+    try:
+        priv = serialization.load_pem_private_key(pem, password=pw.encode("utf-8"))
+    except Exception:
+        print("[ERROR] Wrong password or invalid encrypted key.")
+        return 1
+
+    # 念押し（うっかり解除を防ぐ）
+    confirm = input("Type 'YES' to decrypt and overwrite private.pem as plaintext: ").strip()
+    if confirm != "YES":
+        print("[INFO] Cancelled.")
+        return 0
+
+    bak = backup_file(RSA_KEY_PATH)
+    try:
+        reserialize_private_key_to_path(priv, RSA_KEY_PATH, password=None)
+        set_private_key_protected(False)
+        print(f"[SUCCESS] Migrated: encrypted -> plaintext (backup: {bak})")
+        return 0
+    except Exception as e:
+        RSA_KEY_PATH.write_bytes(bak.read_bytes())
+        os.chmod(RSA_KEY_PATH, 0o600)
+        print(f"[ERROR] Decrypt migration failed; restored from backup. reason={e}")
+        return 1
+
+# -------------- ここまで追加 --------------
 
 
 def ensure_dirs():

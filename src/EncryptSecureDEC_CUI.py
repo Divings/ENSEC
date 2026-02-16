@@ -249,7 +249,8 @@ from utils import decrypt_folder_cli,encrypt_folder
 
 def main():
     parser = argparse.ArgumentParser(description="EncryptSecureDEC CLI")
-    parser.add_argument("mode", choices=["encrypt", "decrypt", "verify-chain", "sign", "verify-sign"])
+    parser.add_argument("mode",choices=["encrypt","decrypt","verify-chain","sign",
+                                        "verify-sign","key-protect-on","key-protect-off"])
     parser.add_argument("file", help="Target file path")
     parser.add_argument("--memo", default="", help="Operation memo")
     parser.add_argument("--password", help="Password for encryption/decryption (prompted if omitted)")
@@ -327,6 +328,19 @@ def main():
         else:
             print(f"Encryption failed: Failed to encrypt\n {res}")
         sys.exit(0)
+    
+        # --- RSA Key Protection Management ---
+    if args.mode == "key-protect-on":
+        result = rsa_encryptor.migrate_private_key_encrypt_inplace()
+        if result == 0:
+            print("🔐 Private key protection ENABLED")
+        sys.exit(result)
+
+    if args.mode == "key-protect-off":
+        result = rsa_encryptor.migrate_private_key_decrypt_inplace()
+        if result == 0:
+            print("🔓 Private key protection DISABLED")
+        sys.exit(result)
 
     # --- RSA Mode ---
     if args.rsa and args.mode == "encrypt":
