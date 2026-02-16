@@ -93,7 +93,9 @@ def backup_file(path: Path) -> Path:
     os.chmod(bak, 0o600)
     return bak
 
-def reserialize_private_key_to_path(private_key, out_path: Path, password: str | None):
+from typing import Optional
+
+def reserialize_private_key_to_path(private_key, out_path: Path, password: Optional[str]):
     if password is None:
         enc_algo = serialization.NoEncryption()
     else:
