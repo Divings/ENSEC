@@ -83,8 +83,24 @@ def set_private_key_protected(enabled: bool) -> None:
 import datetime
 
 def is_pem_encrypted(pem_bytes: bytes) -> bool:
-    # だいたいのPEMはこの文言を含む（TraditionalOpenSSL形式）
-    return b"ENCRYPTED" in pem_bytes.splitlines()[0:5] or b"BEGIN ENCRYPTED PRIVATE KEY" in pem_bytes
+    lines = pem_bytes.splitlines()
+
+    # PKCS#8 encrypted
+    if any(b"BEGIN ENCRYPTED PRIVATE KEY" in line for line in lines[:5]):
+        return True
+
+    # TraditionalOpenSSL encrypted (Proc-Type / DEK-Info が入る)
+    # 例:
+    # -----BEGIN RSA PRIVATE KEY-----
+    # Proc-Type: 4,ENCRYPTED
+    # DEK-Info: AES-256-CBC,....
+    if any(b"ENCRYPTED" in line for line in lines[:15]):
+        return True
+    if any(b"DEK-Info:" in line for line in lines[:15]):
+        return True
+
+    return False
+
 
 def backup_file(path: Path) -> Path:
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

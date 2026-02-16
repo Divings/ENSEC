@@ -49,10 +49,6 @@ def _dir_size_bytes(root: str) -> int:
             continue
     return total
 
-
-
-
-
 class Block:
     def __init__(self, data, previous_hash, operation_type, file_hash, user, memo):
         self.timestamp = datetime.datetime.now(datetime.timezone.utc)
