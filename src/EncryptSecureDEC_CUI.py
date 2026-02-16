@@ -268,6 +268,19 @@ def main():
     file_path = Path(args.file)
     ext = file_path.suffix
 
+         # --- RSA Key Protection Management ---
+    if args.mode == "key-protect-on":
+        result = rsa_encryptor.migrate_private_key_encrypt_inplace()
+        if result == 0:
+            print("🔐 Private key protection ENABLED")
+        sys.exit(result)
+
+    if args.mode == "key-protect-off":
+        result = rsa_encryptor.migrate_private_key_decrypt_inplace()
+        if result == 0:
+            print("🔓 Private key protection DISABLED")
+        sys.exit(result)
+        
     if not args.rsa and ext != ".rdec" and args.mode != "sign" and args.mode != "verify-sign" and args.dir!=True and ext!=".esdc":
         password = args.password or getpass.getpass("🔑 Enter password: ")
 
@@ -329,19 +342,6 @@ def main():
             print(f"Encryption failed: Failed to encrypt\n {res}")
         sys.exit(0)
     
-        # --- RSA Key Protection Management ---
-    if args.mode == "key-protect-on":
-        result = rsa_encryptor.migrate_private_key_encrypt_inplace()
-        if result == 0:
-            print("🔐 Private key protection ENABLED")
-        sys.exit(result)
-
-    if args.mode == "key-protect-off":
-        result = rsa_encryptor.migrate_private_key_decrypt_inplace()
-        if result == 0:
-            print("🔓 Private key protection DISABLED")
-        sys.exit(result)
-
     # --- RSA Mode ---
     if args.rsa and args.mode == "encrypt":
         pubkey_path = args.pubkey if args.pubkey else str(rsa_encryptor.RSA_PUB_PATH)
