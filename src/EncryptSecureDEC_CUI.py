@@ -16,6 +16,13 @@ import rsa_signer
 import wavencode
 import rsa_encryptor
 from pathlib import Path
+from Auth import authorize_environment
+
+auth,reson = authorize_environment()
+if auth == 0:
+    #notify_slack("[実行停止] 実行環境が許可されていません: " + reson)
+    print("実行環境が許可されていません: " + reson)
+    sys.exit()
 
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
 def _format_bytes(num: int) -> str:
