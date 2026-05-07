@@ -6,60 +6,16 @@ import os
 import getpass
 import sys
 import lzma
+import rsa_encryptor
+import rsa_signer
 import hashlib
 import json
 import datetime
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import PBKDF2
-import rsa_signer
 import wavencode
-import rsa_encryptor
-from pathlib import Path
-from Auth import authorize_environment
-
-result = authorize_environment()
-
-if not result["ok"]:
-    reason = result["reason"]
-
-    #notify_slack("実行停止: 実行環境が許可されていません: " + str(reason))
-    print("実行環境が許可されていません: " + str(reason))
-    sys.exit()
-
-# OKならそのまま続行
-
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
-def _format_bytes(num: int) -> str:
-    units = ["B", "KB", "MB", "GB", "TB", "PB"]
-    n = float(num)
-    for u in units:
-        if n < 1024.0 or u == units[-1]:
-            return f"{n:.2f} {u}" if u != "B" else f"{int(n)} {u}"
-        n /= 1024.0
-
-def _dir_size_bytes(root: str) -> int:
-    total = 0
-    # シンボリックリンクは辿らない（無限ループ回避）
-    stack = [root]
-    while stack:
-        d = stack.pop()
-        try:
-            with os.scandir(d) as it:
-                for entry in it:
-                    try:
-                        if entry.is_symlink():
-                            continue
-                        if entry.is_file(follow_symlinks=False):
-                            total += entry.stat(follow_symlinks=False).st_size
-                        elif entry.is_dir(follow_symlinks=False):
-                            stack.append(entry.path)
-                    except (PermissionError, FileNotFoundError):
-                        # 権限/競合で読めないものはスキップ
-                        continue
-        except (PermissionError, FileNotFoundError, NotADirectoryError):
-            continue
-    return total
 
 class Block:
     def __init__(self, data, previous_hash, operation_type, file_hash, user, memo):
@@ -125,7 +81,13 @@ class Blockchain:
                 user=block_data['user'],
                 memo=block_data['memo']
             )
-            block.timestamp = datetime.datetime.strptime(block_data['timestamp'], '%Y-%m-%d %H:%M:%S.%f%z')
+            timestamp_str = block_data['timestamp']
+
+            # Python 3.6は+00:00形式をパースできない → +0000に変換
+            if '+' in timestamp_str and ':' in timestamp_str[-6:]:
+                timestamp_str = timestamp_str[:-3] + timestamp_str[-2:]
+
+            block.timestamp = datetime.datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f%z')
             block.hash = block_data['hash']
             blockchain.chain.append(block)
         return blockchain
@@ -144,31 +106,49 @@ deletemode = {
     "mode": False
 }
 
+from Auth import authorize_environment
+result = authorize_environment()
+if not result["ok"]:
+    reason = result["reason"]
+
+    print("実行環境が許可されていません: " + str(reason))
+    sys.exit()
+     
+def read_password_from_stdin_or_prompt(args_password=None):
+    # Web/PHP/proc_open などから標準入力で渡された場合
+    if not sys.stdin.isatty():
+        password = sys.stdin.read().rstrip("\r\n")
+        if password:
+            return password
+
+    # 旧方式との一時互換。将来的には削除推奨
+    if args_password:
+        print("Warning: --password is deprecated. Use stdin instead.", file=sys.stderr)
+        return args_password
+
+    # 手動実行時
+    return getpass.getpass("🔑 Enter password: ")
 def delete_pre_file(file_path):
-    path_o = Path(file_path)
-    abs_path = path_o.resolve()
+    from pathlib import Path
+    path = Path(file_path)
+    abs_path = path.resolve()
     if abs_path.exists():
         abs_path.unlink()
 
 def cli_encrypt(file_path, password, memo):
-    import passchk 
+    #import passchk 
     with open(file_path, 'rb') as f:
         plaintext = f.read()
     salt = get_random_bytes(16)
     
-    if passchk.passchk(memo, password):
-        print(" Warning: The note contains a password.\n For security reasons, it is recommended not to include passwords in notes.")
-        a = input(" Do you want to continue (y or n) >> ")
-        if a.lower() != "y":
-            print(" Canceled the encryption.")
-            return 
-        
+    
+    global users
     key = PBKDF2(password, salt, dkLen=32, count=100_000)
     nonce = get_random_bytes(12)
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
     ciphertext, tag = cipher.encrypt_and_digest(plaintext)
     file_hash = hashlib.sha256(ciphertext).hexdigest()
-    username = getpass.getuser()
+    username = users
 
     try:
         with lzma.open(file_path + ".vdec", 'rb') as f:
@@ -190,7 +170,7 @@ def cli_encrypt(file_path, password, memo):
         f.write(blockchain_data)
     if deletemode["mode"] == True:
         delete_pre_file(file_path)
-    print(f"✅ Encryption completed: {out_path}")
+    print(f"Encryption completed: {out_path}")
 
 def cli_decrypt(file_path, password, memo):
     if file_path.endswith(".wav"):
@@ -216,14 +196,14 @@ def cli_decrypt(file_path, password, memo):
     try:
         plaintext = cipher.decrypt_and_verify(ciphertext, tag)
     except ValueError:
-        print("❌ Error: Decryption failed. The password may be incorrect or the file may be tampered with.")
+        print("Error: Decryption failed. The password may be incorrect or the file may be tampered with.")
         sys.exit(1)
 
     output_file = file_path.replace(".vdec.wav", "_decrypted").replace(".vdec", "_decrypted")
     with open(output_file, 'wb') as f:
         f.write(plaintext)
-
-    username = getpass.getuser()
+    global users
+    username = users
     file_hash = hashlib.sha256(ciphertext).hexdigest()
     block = Block(file_hash, blockchain.chain[-1].hash if blockchain.chain else "0", "Decrypt", file_hash, username, memo)
     blockchain.add_block(block)
@@ -234,7 +214,7 @@ def cli_decrypt(file_path, password, memo):
             f.write(BLOCKCHAIN_HEADER)
             f.write(blockchain.to_json().encode('utf-8'))
 
-    print(f"✅ Decryption completed: {output_file}")
+    print(f"Decryption completed: {output_file}")
 
 def cli_verify_chain(file_path):
     if file_path.endswith(".wav"):
@@ -247,25 +227,23 @@ def cli_verify_chain(file_path):
     chain_json = data[split_index + len(BLOCKCHAIN_HEADER):].decode('utf-8')
     blockchain = Blockchain.from_json(chain_json)
     if blockchain.is_chain_valid():
-        print("✅ Blockchain is consistent")
+        print("Blockchain is consistent")
     else:
-        print("❌ Blockchain has inconsistencies")
+        print(" Blockchain has inconsistencies")
 
 # --- RSA key check at startup ---
-rsa_encryptor.ensure_rsa_keys()
-from utils import decrypt_folder_cli,encrypt_folder
-
+# rsa_encryptor.ensure_rsa_keys()
+users=""
 def main():
     parser = argparse.ArgumentParser(description="EncryptSecureDEC CLI")
-    parser.add_argument("mode",choices=["encrypt","decrypt","verify-chain","sign",
-                                        "verify-sign","key-protect-on","key-protect-off"])
+    parser.add_argument("mode", choices=["encrypt", "decrypt", "verify-chain", "sign", "verify-sign"])
     parser.add_argument("file", help="Target file path")
     parser.add_argument("--memo", default="", help="Operation memo")
     parser.add_argument("--password", help="Password for encryption/decryption (prompted if omitted)")
     parser.add_argument("--delete", action="store_true",help="Delete the plaintext file after encrypting the file.")
     parser.add_argument("--rsa", action="store_true",help="Encrypt / Decrypt RSA Mode")
-    parser.add_argument("--dir", action="store_true",help="Encrypt Dir mode")
     parser.add_argument("--pubkey", help="Path to public key file (only required in RSA encrypt mode)")
+    parser.add_argument("--user", required=True,help="Encrypt & Decrypt Run Username")
     args = parser.parse_args()
 
     # --- validate RSA/pubkey usage ---
@@ -273,83 +251,27 @@ def main():
     if args.rsa:
         if args.mode == "decrypt" and args.pubkey:
             parser.error("--pubkey must not be specified in decrypt mode (private key is used automatically)")
-    file_path = Path(args.file)
-    ext = file_path.suffix
 
-    # --- RSA Key Protection Management ---
-    if args.mode == "key-protect-on":
-        result = rsa_encryptor.migrate_private_key_encrypt_inplace()
-        if result == 0:
-            print("🔐 Private key protection ENABLED")
-        sys.exit(result)
-
-    if args.mode == "key-protect-off":
-        result = rsa_encryptor.migrate_private_key_decrypt_inplace()
-        if result == 0:
-            print("🔓 Private key protection DISABLED")
-        sys.exit(result)
-
-    if not args.rsa and ext != ".rdec" and args.mode != "sign" and args.mode != "verify-sign" and args.dir!=True and ext!=".esdc":
-        password = args.password or getpass.getpass("🔑 Enter password: ")
-
+    if not args.rsa:
+        password = read_password_from_stdin_or_prompt(args.password)
+    global users
+    if args.user == None:
+        users="ENSEC WABAPP"
+    else:
+        users = args.user
     # Check if file exists
-    if not os.path.isfile(args.file) and args.dir!=True:
-        print(f"❌ Error: File not found - {args.file}")
+    if not os.path.isfile(args.file):
+        print(f"Error: File not found - {args.file}")
         sys.exit(1)
 
     # For decrypt mode, check extension
-    if args.mode == "decrypt" and not (args.file.endswith(".vdec") or args.file.endswith(".rdec") or args.file.endswith(".esdc")):
-        print(f"❌ Error: The file for decryption must have a '.vdec' or '.rdec' extension.")
+    if args.mode == "decrypt" and not (args.file.endswith(".vdec") or args.file.endswith(".rdec")):
+        print(f"Error: The file for decryption must have a '.vdec' or '.rdec' extension.")
         sys.exit(1)
 
     if args.delete:
         deletemode["mode"] = True
 
-    if args.mode=="decrypt" and os.path.splitext(args.file)[1].lower()==".esdc":
-        if os.path.splitext(args.file)[1].lower()==".esdc":
-            if os.path.exists(args.file)==False:
-                print("Decryption failed: Failed to decrypt\n file not found")
-                sys.exit(1)
-            p =  file_path
-
-            # 「そのパスが属するディレクトリ」を取りたい場合
-            parent_dir = p.parent
-            # ルート判定（E:\ や C:\ など）
-            is_root = parent_dir == Path(parent_dir.anchor)
-
-            if is_root:
-                # ルート直下に作業用フォルダを作る（例: E:\_esdwork）
-                work_dir = parent_dir / "_esdwork"
-            else:
-                work_dir = parent_dir / "_esdwork"  # どのみちサブフォルダに逃がすと安全
-            work_dir.mkdir(parents=True, exist_ok=True)
-            
-            res=decrypt_folder_cli(args.file,work_dir)
-            if res==1:
-                print("Decryption successful: Decryption was successful\n")
-            else:
-                print(f"Decryption failed: Failed to decrypt\n {res}")
-            sys.exit()
-    if args.mode=="encrypt" and args.dir==True:
-        if os.path.exists(args.file)==False:
-            print("Encryption failed: Failed to encrypt\n Dir not Found")
-            sys.exit(1)
-        # ルート判定（E:\ や C:\ など）
-        folder_path = Path(args.file).resolve()
-        parent_dir = folder_path.parent
-        base_name = folder_path.name
-        
-        size_bytes = _dir_size_bytes(str(folder_path))
-        print(f"📦 Folder size: {_format_bytes(size_bytes)} ({size_bytes:,} bytes)")
-
-        out_file = str(parent_dir / f"{base_name}.esdc")
-        res=encrypt_folder(args.file,out_file)
-        if res==1:
-            print("Encryption successful: Encryption was successful\n")
-        else:
-            print(f"Encryption failed: Failed to encrypt\n {res}")
-        sys.exit(0)
-    
     # --- RSA Mode ---
     if args.rsa and args.mode == "encrypt":
         pubkey_path = args.pubkey if args.pubkey else str(rsa_encryptor.RSA_PUB_PATH)
@@ -371,7 +293,7 @@ def main():
     elif args.mode == "verify-sign":
         rsa_signer.verify_file_signature(args.file)
     else:
-        print("❌ Unknown mode")
+        print("Unknown mode")
 
 if __name__ == "__main__":
     main()
