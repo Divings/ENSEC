@@ -288,9 +288,9 @@ def main():
     if args.rsa:
         if args.mode == "decrypt" and args.pubkey:
             parser.error("--pubkey must not be specified in decrypt mode (private key is used automatically)")
-
-    if not args.rsa:
-        password = read_password_from_stdin_or_prompt(args.password)
+    if args.mode in ["encrypt", "decrypt", "sign"]:
+        if not args.rsa:
+            password = read_password_from_stdin_or_prompt(args.password)
     global users
     if args.user == None:
         users="ENSEC WABAPP"
