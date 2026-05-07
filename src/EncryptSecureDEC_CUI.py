@@ -15,7 +15,44 @@ from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
 from Crypto.Protocol.KDF import PBKDF2
 import wavencode
+
+
 BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
+import lzma
+import json
+import datetime
+import sys
+
+BLOCKCHAIN_HEADER = b'BLOCKCHAIN_DATA_START\n'
+
+def blockview(file_path: str) -> int:
+    try:
+        with lzma.open(file_path, 'rb') as f:
+            data = f.read()
+
+        if BLOCKCHAIN_HEADER not in data:
+            print("ブロックチェーン情報が見つかりません。", file=sys.stderr)
+            return 1
+
+        split_index = data.index(BLOCKCHAIN_HEADER)
+        chain_bytes = data[split_index + len(BLOCKCHAIN_HEADER):]
+        chain_json_str = chain_bytes.decode('utf-8', errors='ignore').strip()
+
+        parsed = json.loads(chain_json_str)
+
+        parsed.sort(
+            key=lambda b: datetime.datetime.strptime(
+                b['timestamp'],
+                '%Y-%m-%d %H:%M:%S.%f%z'
+            )
+        )
+
+        print(json.dumps(parsed, indent=2, ensure_ascii=False))
+        return 0
+
+    except Exception as e:
+        print(f"blockview error: {e}", file=sys.stderr)
+        return 1
 
 class Block:
     def __init__(self, data, previous_hash, operation_type, file_hash, user, memo):
@@ -236,7 +273,7 @@ def cli_verify_chain(file_path):
 users=""
 def main():
     parser = argparse.ArgumentParser(description="EncryptSecureDEC CLI")
-    parser.add_argument("mode", choices=["encrypt", "decrypt", "verify-chain", "sign", "verify-sign"])
+    parser.add_argument("mode", choices=["encrypt", "decrypt", "verify-chain", "sign", "verify-sign","blockview"])
     parser.add_argument("file", help="Target file path")
     parser.add_argument("--memo", default="", help="Operation memo")
     parser.add_argument("--password", help="Password for encryption/decryption (prompted if omitted)")
@@ -292,6 +329,8 @@ def main():
         rsa_signer.sign_file(args.file)
     elif args.mode == "verify-sign":
         rsa_signer.verify_file_signature(args.file)
+    elif args.mode=="blockview":
+        blockview(args.file)
     else:
         print("Unknown mode")
 
